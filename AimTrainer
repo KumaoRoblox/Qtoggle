@@ -1,0 +1,192 @@
+-----------------------
+-- サービスと変数宣言 --
+-----------------------
+local runService = game:GetService("RunService")
+local players = game:GetService("Players")
+local userInputService = game:GetService("UserInputService")
+
+local localPlayer = players.LocalPlayer
+local mouse = localPlayer:GetMouse()
+local cam = workspace.CurrentCamera
+
+-- Targetsフォルダを取得 (無い場合はエラーになるので WaitForChild)
+local targetsFolder = workspace:WaitForChild("Targets")
+
+-- マウス移動の設定
+local isEnabled = false   -- QキーON/OFF用
+local smoothness = 1      -- 値が大きいほどマウス移動がゆっくり
+
+-- ターゲット位置に対して、少し下を狙うためのオフセット量
+local AIM_OFFSET = Vector3.new(0, 1, 0)
+
+-- どの程度マウスとターゲットの座標が近ければ「重なった」とみなすか
+local AIM_THRESHOLD = 2
+
+-- 「現在どのターゲットを狙っているか」を示すインデックス
+local currentIndex = 1
+
+-- ターゲット一覧を保持するテーブル
+local targetList = {}
+
+-- 既に左クリックしたかどうかを管理するフラグ
+local hasClicked = false
+
+---------------------
+-- UIを簡易的に作成 --
+---------------------
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "MouseMoveToggleUI"
+
+-- ※通常のRoblox環境では game.CoreGui への挿入はできませんが、
+--   Exploit環境では可能な場合があります。
+--   必要に応じて StarterGui や PlayerGui などを利用してください。
+screenGui.Parent = game.CoreGui
+
+local toggleLabel = Instance.new("TextLabel")
+toggleLabel.Name = "ToggleLabel"
+toggleLabel.Size = UDim2.new(0, 100, 0, 40)
+toggleLabel.Position = UDim2.new(0, 20, 0, 40)
+toggleLabel.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+toggleLabel.BackgroundTransparency = 0.3
+toggleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+toggleLabel.TextSize = 24
+toggleLabel.Text = "OFF"
+toggleLabel.Parent = screenGui
+
+------------------------------------------------------
+-- Targetsフォルダ内の「Target」パーツ一覧を取得する --
+------------------------------------------------------
+local function refreshTargetList()
+    targetList = {}
+    for _, child in ipairs(targetsFolder:GetChildren()) do
+        if child:IsA("BasePart") and child.Name == "Target" then
+            table.insert(targetList, child)
+        end
+    end
+    -- currentIndex がリスト数を超えてしまった場合は 1 に戻す or 0 にする
+    if currentIndex > #targetList then
+        currentIndex = (#targetList > 0) and 1 or 0
+    end
+end
+
+---------------------------------------------
+-- 現在のインデックスを進めて次のターゲットへ --
+---------------------------------------------
+local function goToNextTarget()
+    if #targetList == 0 then
+        return
+    end
+    
+    currentIndex = currentIndex + 1
+    
+    -- すべてのターゲットを巡回し終えたら先頭に戻す
+    if currentIndex > #targetList then
+        currentIndex = 1
+    end
+end
+
+-- 初期取得
+refreshTargetList()
+
+----------------------------------------------------
+-- Targetが追加/削除されたらリストを取り直す処理例 --
+----------------------------------------------------
+targetsFolder.ChildAdded:Connect(function(child)
+    if child:IsA("BasePart") and child.Name == "Target" then
+        table.insert(targetList, child)
+    end
+end)
+
+targetsFolder.ChildRemoved:Connect(function(child)
+    if child:IsA("BasePart") and child.Name == "Target" then
+        -- ターゲットリストから削除する
+        for i, t in ipairs(targetList) do
+            if t == child then
+                table.remove(targetList, i)
+                break
+            end
+        end
+        -- 今のターゲットが消えた場合のケア
+        if currentIndex > #targetList then
+            currentIndex = #targetList
+        end
+    end
+end)
+
+------------------------------------------------
+-- Qキーでマウス移動機能のON/OFFをトグルする例 --
+------------------------------------------------
+userInputService.InputBegan:Connect(function(input, gameProcessed)
+    -- すでに他のUI等で処理されている場合は無視
+    if gameProcessed then return end
+
+    if input.KeyCode == Enum.KeyCode.Q then
+        -- TargetsリストをリフレッシュしてからON/OFF切り替え
+        refreshTargetList()
+        if #targetList == 0 then
+            warn("No Target found in the folder!")
+            return
+        end
+
+        isEnabled = not isEnabled
+        toggleLabel.Text = isEnabled and "ON" or "OFF"
+        
+        -- リストがあるのに currentIndex が 0 の場合は 1 にしておく
+        if currentIndex == 0 and isEnabled then
+            currentIndex = 1
+        end
+    end
+end)
+
+-------------------------------------------------
+-- 毎フレーム処理 (RenderStepped) でマウス移動 --
+-------------------------------------------------
+runService.RenderStepped:Connect(function()
+    -- 機能がOFFの場合はスキップ
+    if not isEnabled then return end
+    
+    -- リストにターゲットが無い、または currentIndex が有効でない場合はスキップ
+    if #targetList == 0 or currentIndex < 1 or currentIndex > #targetList then return end
+    
+    -- 現在のターゲット
+    local currentTarget = targetList[currentIndex]
+    if not currentTarget or not currentTarget.Parent then
+        return
+    end
+    
+    -- カメラが無い場合は再取得を試みる
+    if not cam or not cam.Parent then
+        cam = workspace.CurrentCamera or cam
+        if not cam then return end
+    end
+
+    -- ターゲットの「少し下」の座標を計算
+    local aimPos = currentTarget.Position + AIM_OFFSET
+
+    -- 画面上の2D座標に変換 (onScreen は使わない)
+    local screenPos = cam:WorldToViewportPoint(aimPos)
+
+    -- mouse.X, mouse.Y との相対的な差分を計算
+    -- (必要に応じて +36 を調整/削除してください)
+    local deltaX = (screenPos.X - mouse.X) / smoothness
+    local deltaY = (screenPos.Y - (mouse.Y + 36)) / smoothness
+
+    -- OSのマウスを物理移動する関数(Exploit用API)
+    mousemoverel(deltaX, deltaY)
+
+    -- ここでは onScreen を無視しているので、画面外でも狙う
+    -- 「ターゲットと十分近い」と判定されたらクリック
+    if math.abs(deltaX) < AIM_THRESHOLD and math.abs(deltaY) < AIM_THRESHOLD then
+        if not hasClicked then
+            -- Exploit環境での左クリック。マウス押下・離しをまとめて行う場合:
+            mouse1click()
+            hasClicked = true
+
+            -- ターゲットをクリックしたので、次のターゲットへ移動
+            goToNextTarget()
+        end
+    else
+        -- ターゲットとずれたら再度クリックができるようにする
+        hasClicked = false
+    end
+end)
